@@ -1,0 +1,357 @@
+From 9c7ad2912a9b706db8ae5476e0625f5bae2edc52 Mon Sep 17 00:00:00 2001
+From: Labcoxyzl <70792091+Labcoxyzl@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 11:24:11 -0400
+Subject: [PATCH] Add Recent sorting to the Agents grouping cycle
+
+---
+ codex-rs/config/src/types.rs                  |  2 +
+ codex-rs/core/config.schema.json              |  3 +-
+ codex-rs/tui/src/app/agent_center/render.rs   |  1 +
+ codex-rs/tui/src/app/agent_center/rows.rs     |  1 +
+ .../src/app/agents_overview_actions_tests.rs  | 21 ++++-
+ .../tui/src/app/agents_overview_grouping.rs   |  5 ++
+ codex-rs/tui/src/app/agents_overview_tests.rs | 88 +++++++++++++++++++
+ codex-rs/tui/src/app/agents_overview_view.rs  |  3 +-
+ ...s_selection_adjacent_in_display_order.snap |  7 ++
+ ...ests__agents_overview_recent_grouping.snap | 28 ++++++
+ 10 files changed, 153 insertions(+), 6 deletions(-)
+ create mode 100644 codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__agents_overview_recent_grouping.snap
+
+diff --git a/codex-rs/config/src/types.rs b/codex-rs/config/src/types.rs
+index 2dbdfe2c..80b6ae72 100644
+--- a/codex-rs/config/src/types.rs
++++ b/codex-rs/config/src/types.rs
+@@ -75,6 +75,7 @@ pub enum AgentsOverviewGrouping {
+     Project,
+     Status,
+     Model,
++    Recent,
+ }
+ 
+ impl AgentsOverviewGrouping {
+@@ -83,6 +84,7 @@ impl AgentsOverviewGrouping {
+             Self::Project => "project",
+             Self::Status => "status",
+             Self::Model => "model",
++            Self::Recent => "recent",
+         }
+     }
+ }
+diff --git a/codex-rs/core/config.schema.json b/codex-rs/core/config.schema.json
+index 4aba1bab..bf2fd9f3 100644
+--- a/codex-rs/core/config.schema.json
++++ b/codex-rs/core/config.schema.json
+@@ -36,7 +36,8 @@
+       "enum": [
+         "project",
+         "status",
+-        "model"
++        "model",
++        "recent"
+       ],
+       "type": "string"
+     },
+diff --git a/codex-rs/tui/src/app/agent_center/render.rs b/codex-rs/tui/src/app/agent_center/render.rs
+index 1d8adef4..90fd8f71 100644
+--- a/codex-rs/tui/src/app/agent_center/render.rs
++++ b/codex-rs/tui/src/app/agent_center/render.rs
+@@ -139,6 +139,7 @@ impl Renderable for AgentsOverviewView {
+             AgentsOverviewGrouping::Project => "Project",
+             AgentsOverviewGrouping::Status => "Status",
+             AgentsOverviewGrouping::Model => "Model",
++            AgentsOverviewGrouping::Recent => "Recent",
+         };
+         let group_key = self
+             .agents_keymap
+diff --git a/codex-rs/tui/src/app/agent_center/rows.rs b/codex-rs/tui/src/app/agent_center/rows.rs
+index bc0edb55..7de23e64 100644
+--- a/codex-rs/tui/src/app/agent_center/rows.rs
++++ b/codex-rs/tui/src/app/agent_center/rows.rs
+@@ -152,6 +152,7 @@ impl AgentsOverviewView {
+                         }
+                         AgentsOverviewGrouping::Status => task.group.label().to_owned(),
+                         AgentsOverviewGrouping::Model => model_name(&task.thread).to_owned(),
++                        AgentsOverviewGrouping::Recent => "Recent".to_owned(),
+                     }
+                 };
+                 let count = indices
+diff --git a/codex-rs/tui/src/app/agents_overview_actions_tests.rs b/codex-rs/tui/src/app/agents_overview_actions_tests.rs
+index c741db36..b02ec502 100644
+--- a/codex-rs/tui/src/app/agents_overview_actions_tests.rs
++++ b/codex-rs/tui/src/app/agents_overview_actions_tests.rs
+@@ -163,6 +163,7 @@ async fn archiving_selects_the_next_displayed_task() -> Result<()> {
+             AgentsOverviewGrouping::Project,
+             AgentsOverviewGrouping::Status,
+             AgentsOverviewGrouping::Model,
++            AgentsOverviewGrouping::Recent,
+         ] {
+             for filtered in [false, true] {
+                 let (mut app, mut rx, _op_rx) =
+@@ -213,6 +214,7 @@ async fn archiving_selects_the_next_displayed_task() -> Result<()> {
+                     thread.cwd = test_path_buf(&format!("/tmp/project-{index}")).abs();
+                     thread.model = Some(format!("model-{index}"));
+                     thread.updated_at = index as i64;
++                    thread.recency_at = None;
+                     app.agents_overview.threads.insert(id, Some(thread.clone()));
+                     threads.push(thread);
+                     ids.push(id);
+@@ -236,8 +238,12 @@ async fn archiving_selects_the_next_displayed_task() -> Result<()> {
+                     view.handle_key_event(KeyCode::Down.into());
+                 }
+                 let expected = match (grouping, filtered) {
+-                    (AgentsOverviewGrouping::Status, false) => vec![3, 2, 1, 4],
+-                    (AgentsOverviewGrouping::Status, true) => vec![3, 1, 4],
++                    (AgentsOverviewGrouping::Status | AgentsOverviewGrouping::Recent, false) => {
++                        vec![3, 2, 1, 4]
++                    }
++                    (AgentsOverviewGrouping::Status | AgentsOverviewGrouping::Recent, true) => {
++                        vec![3, 1, 4]
++                    }
+                     (AgentsOverviewGrouping::Project | AgentsOverviewGrouping::Model, false) => {
+                         vec![3, 4, 2, 1]
+                     }
+@@ -313,6 +319,7 @@ async fn external_removals_preserve_adjacent_selection() {
+         AgentsOverviewGrouping::Project,
+         AgentsOverviewGrouping::Status,
+         AgentsOverviewGrouping::Model,
++        AgentsOverviewGrouping::Recent,
+     ] {
+         for filtered in [false, true] {
+             let mut app = make_test_app().await;
+@@ -330,6 +337,7 @@ async fn external_removals_preserve_adjacent_selection() {
+                     thread.cwd = test_path_buf(&format!("/tmp/project-{index}")).abs();
+                     thread.model = Some(format!("model-{index}"));
+                     thread.updated_at = index as i64;
++                    thread.recency_at = None;
+                     thread
+                 })
+                 .collect::<Vec<_>>();
+@@ -361,7 +369,7 @@ async fn external_removals_preserve_adjacent_selection() {
+                 Some(&ids[2])
+             );
+             let expected = match grouping {
+-                AgentsOverviewGrouping::Status => [ids[0], ids[3]],
++                AgentsOverviewGrouping::Status | AgentsOverviewGrouping::Recent => [ids[0], ids[3]],
+                 AgentsOverviewGrouping::Project | AgentsOverviewGrouping::Model => [ids[3], ids[0]],
+             };
+             let archive = ServerNotification::ThreadArchived(ThreadArchivedNotification {
+@@ -421,6 +429,7 @@ async fn hiding_tasks_keeps_selection_adjacent_in_display_order() -> Result<()>
+             thread.cwd = test_path_buf(&format!("/tmp/project-{index}")).abs();
+             thread.model = Some(format!("model-{index}"));
+             thread.updated_at = index as i64;
++            thread.recency_at = None;
+             thread
+         })
+         .collect::<Vec<_>>();
+@@ -440,6 +449,7 @@ async fn hiding_tasks_keeps_selection_adjacent_in_display_order() -> Result<()>
+         AgentsOverviewGrouping::Project,
+         AgentsOverviewGrouping::Status,
+         AgentsOverviewGrouping::Model,
++        AgentsOverviewGrouping::Recent,
+     ] {
+         for filtered in [false, true] {
+             app.agents_overview.hidden_threads.clear();
+@@ -469,7 +479,10 @@ async fn hiding_tasks_keeps_selection_adjacent_in_display_order() -> Result<()>
+             let expected = match (grouping, filtered) {
+                 // The preceding filtered case retains Other 2; rediscovered tasks append.
+                 (AgentsOverviewGrouping::Status, false) => vec![3, 1, 4, 2],
+-                (AgentsOverviewGrouping::Status, true) => vec![3, 1, 4],
++                (AgentsOverviewGrouping::Recent, false) => vec![3, 2, 1, 4],
++                (AgentsOverviewGrouping::Status | AgentsOverviewGrouping::Recent, true) => {
++                    vec![3, 1, 4]
++                }
+                 (AgentsOverviewGrouping::Project | AgentsOverviewGrouping::Model, false) => {
+                     vec![3, 4, 2, 1]
+                 }
+diff --git a/codex-rs/tui/src/app/agents_overview_grouping.rs b/codex-rs/tui/src/app/agents_overview_grouping.rs
+index 767cd3c1..56acacd0 100644
+--- a/codex-rs/tui/src/app/agents_overview_grouping.rs
++++ b/codex-rs/tui/src/app/agents_overview_grouping.rs
+@@ -56,6 +56,10 @@ impl AgentsOverviewView {
+                     std::cmp::Reverse(self.rows[*index].thread.updated_at),
+                 )
+             }),
++            AgentsOverviewGrouping::Recent => visible.sort_by_key(|index| {
++                let thread = &self.rows[*index].thread;
++                std::cmp::Reverse((thread.recency_at.unwrap_or(thread.updated_at), &thread.id))
++            }),
+             AgentsOverviewGrouping::Status => {}
+             AgentsOverviewGrouping::Model => visible.sort_by_key(|index| {
+                 (
+@@ -81,6 +85,7 @@ impl AgentsOverviewView {
+             AgentsOverviewGrouping::Project => {
+                 self.project_groups[left].key == self.project_groups[right].key
+             }
++            AgentsOverviewGrouping::Recent => true,
+             AgentsOverviewGrouping::Status => self.rows[left].group == self.rows[right].group,
+             AgentsOverviewGrouping::Model => {
+                 model_name(&self.rows[left].thread) == model_name(&self.rows[right].thread)
+diff --git a/codex-rs/tui/src/app/agents_overview_tests.rs b/codex-rs/tui/src/app/agents_overview_tests.rs
+index c8c9dad7..975f0b7f 100644
+--- a/codex-rs/tui/src/app/agents_overview_tests.rs
++++ b/codex-rs/tui/src/app/agents_overview_tests.rs
+@@ -1276,6 +1276,93 @@ async fn overview_model_grouping_shows_details_and_preserves_selection() {
+     );
+ }
+ 
++#[tokio::test]
++async fn overview_recent_grouping_orders_activity_and_preserves_selection() {
++    let mut app = make_test_app().await;
++    let mut threads = [
++        (1, 90, Some(10)),
++        (2, 20, None),
++        (3, 1, Some(30)),
++        (4, 0, None),
++        (5, 2, Some(30)),
++    ]
++    .into_iter()
++    .map(|(id, updated_at, recency_at)| {
++        let mut thread = overview_thread(
++            ThreadId::from_u128(id),
++            /*parent_thread_id*/ None,
++            &format!("Task {id}"),
++            if id == 3 {
++                ThreadStatus::NotLoaded
++            } else {
++                ThreadStatus::Idle
++            },
++        );
++        thread.updated_at = updated_at;
++        thread.recency_at = recency_at;
++        thread.cwd = test_path_buf(&format!("/tmp/project-{id}")).abs();
++        thread.model = Some(format!("model-{id}"));
++        thread
++    })
++    .collect::<Vec<_>>();
++    let selected = ThreadId::from_u128(2);
++    let mut view = app.agents_overview_view(threads.clone(), Some(selected));
++    for _ in 0..3 {
++        view.handle_key_event(KeyCode::Char('g').into());
++    }
++    assert_eq!(
++        app.agents_overview.view_state.lock().unwrap().grouping,
++        AgentsOverviewGrouping::Recent
++    );
++    view.pinned_thread_ranks = Some(HashMap::from([(ThreadId::from_u128(4), 0)]));
++    let order = |view: &mut AgentsOverviewView| {
++        view.handle_key_event(KeyCode::Home.into());
++        (0..view.rows.len())
++            .map(|_| {
++                let id = view.rows[view.selected_index().unwrap()].thread_id;
++                view.handle_key_event(KeyCode::Down.into());
++                id
++            })
++            .collect::<Vec<_>>()
++    };
++    assert_eq!(
++        view.rows[view.selected_index().unwrap()].thread_id,
++        selected
++    );
++    assert_eq!(order(&mut view), [4, 5, 3, 2, 1].map(ThreadId::from_u128));
++    app.chat_widget.show_bottom_pane_view(Box::new(view));
++    let rendered = render_bottom_popup(&app.chat_widget, 100);
++    assert!(rendered.contains("Recent"), "{rendered}");
++    assert!(rendered.contains("Pinned"), "{rendered}");
++    insta::assert_snapshot!(
++        "agents_overview_recent_grouping",
++        normalize_agent_center_snapshot(rendered.replace("fwd del", "del"))
++    );
++
++    threads[0].recency_at = Some(40);
++    let mut refreshed = app.agents_overview_view(threads, Some(selected));
++    refreshed.pinned_thread_ranks = Some(HashMap::from([(ThreadId::from_u128(4), 0)]));
++    assert_eq!(
++        refreshed.rows[refreshed.selected_index().unwrap()].thread_id,
++        selected
++    );
++    assert_eq!(
++        order(&mut refreshed),
++        [4, 1, 5, 3, 2].map(ThreadId::from_u128)
++    );
++    refreshed.handle_key_event(KeyCode::End.into());
++    refreshed.handle_key_event(KeyCode::Up.into());
++    assert_eq!(
++        refreshed.rows[refreshed.selected_index().unwrap()].thread_id,
++        ThreadId::from_u128(3)
++    );
++    refreshed.handle_key_event(KeyCode::Char('g').into());
++    assert_eq!(
++        app.agents_overview.view_state.lock().unwrap().grouping,
++        AgentsOverviewGrouping::Project
++    );
++}
++
+ #[tokio::test]
+ async fn shared_overview_shows_only_root_sessions() {
+     assert_eq!(
+@@ -3165,6 +3252,7 @@ async fn overview_grouping_persists_across_config_reloads() -> Result<()> {
+     for expected in [
+         AgentsOverviewGrouping::Status,
+         AgentsOverviewGrouping::Model,
++        AgentsOverviewGrouping::Recent,
+         AgentsOverviewGrouping::Project,
+     ] {
+         let mut view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+diff --git a/codex-rs/tui/src/app/agents_overview_view.rs b/codex-rs/tui/src/app/agents_overview_view.rs
+index 4beec412..fdb3edb6 100644
+--- a/codex-rs/tui/src/app/agents_overview_view.rs
++++ b/codex-rs/tui/src/app/agents_overview_view.rs
+@@ -670,7 +670,8 @@ impl BottomPaneView for AgentsOverviewView {
+             state.grouping = match state.grouping {
+                 AgentsOverviewGrouping::Project => AgentsOverviewGrouping::Status,
+                 AgentsOverviewGrouping::Status => AgentsOverviewGrouping::Model,
+-                AgentsOverviewGrouping::Model => AgentsOverviewGrouping::Project,
++                AgentsOverviewGrouping::Model => AgentsOverviewGrouping::Recent,
++                AgentsOverviewGrouping::Recent => AgentsOverviewGrouping::Project,
+             };
+             self.app_event_tx
+                 .send(AppEvent::PersistAgentsOverviewGrouping(state.grouping));
+diff --git a/codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__actions__hiding_tasks_keeps_selection_adjacent_in_display_order.snap b/codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__actions__hiding_tasks_keeps_selection_adjacent_in_display_order.snap
+index e6bbb767..c234cf38 100644
+--- a/codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__actions__hiding_tasks_keeps_selection_adjacent_in_display_order.snap
++++ b/codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__actions__hiding_tasks_keeps_selection_adjacent_in_display_order.snap
+@@ -23,3 +23,10 @@ Model, filtered=false: › ○ Task 1
+ Model, filtered=true: › ○ Task 3
+ Model, filtered=true: › ○ Task 4
+ Model, filtered=true: › ○ Task 1
++Recent, filtered=false: › ○ Task 3
++Recent, filtered=false: › ○ Other 2
++Recent, filtered=false: › ○ Task 1
++Recent, filtered=false: › ○ Task 4
++Recent, filtered=true: › ○ Task 3
++Recent, filtered=true: › ○ Task 1
++Recent, filtered=true: › ○ Task 4
+diff --git a/codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__agents_overview_recent_grouping.snap b/codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__agents_overview_recent_grouping.snap
+new file mode 100644
+index 00000000..52e245b0
+--- /dev/null
++++ b/codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__agents_overview_recent_grouping.snap
+@@ -0,0 +1,28 @@
++---
++source: tui/src/app/agents_overview_tests.rs
++expression: normalize_agent_center_snapshot(rendered.replace("fwd del", "del"))
++---
++  Agent command center  Group: Recent  g
++   All 5   Needs you 0   Working 0   Ready 4   Inactive 1                          tab/⇧tab filter
++  ────────────────────────────────────────────────────────────────────────────────────────────────
++      Tasks                                               │ Task details
++  Pinned  1                                               │
++  › ○ Task 4                                              │ Task 4
++                                                          │ ○ Ready
++  Recent  4                                               │
++    ○ Task 5                                              │ Model: model-4
++    ○ Task 3                                              │ Reasoning: Unknown
++    ○ Task 2                                              │
++    ○ Task 1                                              │ Project
++                                                          │ /tmp/project-4
++                                                          │
++                                                          │ Prompt
++                                                          │ Task 4
++                                                          │
++                                                          │
++                                                          │
++                                                          │
++                                                          │
++                                                          │
++                                                          │
++  ? help  esc back  ↑/↓ move  enter open  n new

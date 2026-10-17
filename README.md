@@ -1,6 +1,6 @@
 # Codex Enhancements
 
-Patches for Codex CLI: a conditional prompt queue and an Agents working-directory fix.
+Patches for Codex CLI: a conditional prompt queue, Recent sorting, and an Agents working-directory fix.
 
 ## Conditional queue
 
@@ -28,6 +28,22 @@ Entries dispatch in order. A waiting entry holds later entries, but work in diff
 Each entry can be edited separately. Recovery protects active dispatches from competing servers and holds uncertain deliveries for review instead of automatically resending them.
 
 **Based on Codex 0.163.0.** [Build, install, and rollback](INSTALL.md).
+
+## Recent sorting
+
+In Agents, press `g` to cycle **Project → Status → Model → Recent**. Recent lists tasks across projects and models by newest activity, with pinned tasks kept at the top. The selected view is saved between sessions.
+
+Included in the 0.163.0 patch series alongside the queue.
+
+### Agents shortcuts
+
+Pinning and archiving are built in; this patch adds Recent to the grouping cycle:
+
+| Key | Action |
+| --- | --- |
+| `p` | Pin/unpin the selected task |
+| `a` | Archive the selected task |
+| `g` | Cycle grouping: project → status → model → recent |
 
 ## Agents working-directory fix
 

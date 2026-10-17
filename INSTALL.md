@@ -1,6 +1,6 @@
 # Installation
 
-## Conditional queue
+## Queue and Recent sorting
 
 Tested on Linux/WSL with Codex `rust-v0.163.0` (`83086188ae0614bd882818ff1aa23f3194962012`). Other releases require a rebase and fresh testing.
 
@@ -36,6 +36,8 @@ The launcher expects `~/.local/bin/codex` to already be a symlink to your offici
 Relaunch clients after activation. Existing shell aliases or functions can still override `codex`; check `type -a codex` and remove any unwanted argument-injecting wrapper yourself. This repository does not install one.
 
 ### Roll back
+
+Switch Agents grouping back to Project before restoring an older build, which does not recognize `recent`. If needed, set `agents_overview_grouping = "project"` in your config’s `[tui]` section.
 
 At another quiet boundary, from the same checkout:
 
