@@ -1,0 +1,107 @@
+From c93b64f88ac7b1191f0aaaa10db359f9f8cdfd56 Mon Sep 17 00:00:00 2001
+From: Labcoxyzl <70792091+Labcoxyzl@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 03:18:54 -0400
+Subject: [PATCH 6/6] Simplify queue integration and align regression
+ expectations
+
+---
+ .../request_processors/thread_goal_processor.rs |  7 +------
+ codex-rs/ext/queue/src/service.rs               |  6 +-----
+ ...ive_reconnect__unavailable_conversation.snap |  2 --
+ ...__daemon_command_center_vanished_rename.snap |  2 +-
+ .../bottom_pane/chat_composer/paste_tests.rs    | 17 +++++------------
+ 5 files changed, 8 insertions(+), 26 deletions(-)
+
+diff --git a/codex-rs/app-server/src/request_processors/thread_goal_processor.rs b/codex-rs/app-server/src/request_processors/thread_goal_processor.rs
+index be778b7a..73b806d7 100644
+--- a/codex-rs/app-server/src/request_processors/thread_goal_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_goal_processor.rs
+@@ -214,12 +214,7 @@ impl ThreadGoalRequestProcessor {
+             .await
+             .map_err(goal_service_error)?;
+         let goal = ThreadGoal::from(outcome.goal.clone());
+-        let goal_id = state_db
+-            .thread_goals()
+-            .get_thread_goal(thread_id)
+-            .await
+-            .map_err(|error| internal_error(format!("failed to read goal identity: {error}")))?
+-            .map(|goal| goal.goal_id);
++        let goal_id = Some(outcome.goal_id().to_string());
+ 
+         let persist_result = match self.thread_manager.get_thread(thread_id).await {
+             Ok(thread) => {
+diff --git a/codex-rs/ext/queue/src/service.rs b/codex-rs/ext/queue/src/service.rs
+index ec79cfee..0783cd1f 100644
+--- a/codex-rs/ext/queue/src/service.rs
++++ b/codex-rs/ext/queue/src/service.rs
+@@ -485,10 +485,6 @@ impl QueuedItemService {
+             .await
+     }
+ 
+-    async fn dispatch_if_idle(&self, thread_id: ThreadId) -> Result<(), QueueServiceError> {
+-        self.dispatch_ready_head(thread_id).await
+-    }
+-
+     async fn wake_if_loaded(&self, thread_id: ThreadId) {
+         let Some(manager) = self.thread_manager.upgrade() else {
+             return;
+@@ -697,7 +693,7 @@ where
+                 return;
+             };
+             let _guard = self.dispatch_guard(thread_id).await;
+-            if let Err(error) = self.dispatch_if_idle(thread_id).await {
++            if let Err(error) = self.dispatch_ready_head(thread_id).await {
+                 tracing::warn!(%thread_id, %error, "failed to dispatch queued user input");
+             }
+         })
+diff --git a/codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__active_reconnect__unavailable_conversation.snap b/codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__active_reconnect__unavailable_conversation.snap
+index 335071a0..b37853d5 100644
+--- a/codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__active_reconnect__unavailable_conversation.snap
++++ b/codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__active_reconnect__unavailable_conversation.snap
+@@ -3,8 +3,6 @@ source: tui/src/app/tests/active_reconnect_tests.rs
+ expression: "format!(\"{history}\\n{}\",\nrender_bottom_popup(&app.chat_widget,\n80)).replace(&test_path_buf(\"/tmp/project\").display().to_string(),\n\"/tmp/project\")"
+ ---
+ • This conversation is unavailable. Its cached transcript and draft remain here; input is paused. Open the agent picker or return to the parent to continue.
+-⚠ A background Codex service is running v2.0.0, different from your Codex CLI
+-  v0.0.0.
+ › unavailable draft
+ 
+   gpt-test default · /tmp/project
+diff --git a/codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__navigation_reconnect__daemon_command_center_vanished_rename.snap b/codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__navigation_reconnect__daemon_command_center_vanished_rename.snap
+index a8997b37..af12ff75 100644
+--- a/codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__navigation_reconnect__daemon_command_center_vanished_rename.snap
++++ b/codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__navigation_reconnect__daemon_command_center_vanished_rename.snap
+@@ -25,4 +25,4 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
+                                                           │
+                                                           │
+                                                           │
+-  Service v2.0.0 ≠ Codex CLI v0.0.0 · /daemon
++  ? help  esc back  ↑/↓ move  enter open  n new
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/paste_tests.rs b/codex-rs/tui/src/bottom_pane/chat_composer/paste_tests.rs
+index de800270..5f5d8760 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer/paste_tests.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/paste_tests.rs
+@@ -41,18 +41,11 @@ fn paste_burst_tabs_preserve_multiline_draft() {
+             }
+ 
+             let (result, _) = composer.handle_key_event(KeyEvent::from(KeyCode::Tab));
+-            let expected = if running {
+-                InputResult::Queued {
+-                    text: payload.trim().to_string(),
+-                    text_elements: Vec::new(),
+-                    action: QueuedInputAction::Plain,
+-                    pending_pastes: Vec::new(),
+-                }
+-            } else {
+-                InputResult::Submitted {
+-                    text: payload.trim().to_string(),
+-                    text_elements: Vec::new(),
+-                }
++            let expected = InputResult::Queued {
++                text: payload.trim().to_string(),
++                text_elements: Vec::new(),
++                action: QueuedInputAction::Plain,
++                pending_pastes: Vec::new(),
+             };
+             assert_eq!(result, expected);
+         }

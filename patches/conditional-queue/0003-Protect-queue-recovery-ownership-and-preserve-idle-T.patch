@@ -1,0 +1,222 @@
+From 82556305d8b90a95e5e7665ff348260d064810d0 Mon Sep 17 00:00:00 2001
+From: Labcoxyzl <70792091+Labcoxyzl@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 02:26:51 -0400
+Subject: [PATCH 3/6] Protect queue recovery ownership and preserve idle Tab
+ ordering
+
+---
+ .../app-server/tests/suite/v2/thread_queue.rs | 70 +++++++++++++++++++
+ codex-rs/ext/queue/src/watch.rs               | 14 ++++
+ codex-rs/tui/src/bottom_pane/chat_composer.rs | 25 +++++--
+ .../tui/src/chatwidget/tests/service_queue.rs | 27 +++++++
+ 4 files changed, 131 insertions(+), 5 deletions(-)
+
+diff --git a/codex-rs/app-server/tests/suite/v2/thread_queue.rs b/codex-rs/app-server/tests/suite/v2/thread_queue.rs
+index 596842c1..02155b45 100644
+--- a/codex-rs/app-server/tests/suite/v2/thread_queue.rs
++++ b/codex-rs/app-server/tests/suite/v2/thread_queue.rs
+@@ -70,12 +70,82 @@ use core_test_support::skip_if_remote;
+ use pretty_assertions::assert_eq;
+ use serde_json::Value;
+ use serde_json::json;
++use sqlx::SqlitePool;
++use sqlx::sqlite::SqliteConnectOptions;
+ use tempfile::TempDir;
+ use tokio::time::timeout;
+ use wiremock::MockServer;
+ 
+ const READ_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
+ 
++#[tokio::test]
++async fn second_server_cannot_recover_a_dispatch_owned_by_first_server() -> Result<()> {
++    let (mut first, codex_home, _server) = queue_app(vec![blocked_turn_response()?]).await?;
++    let source_id = first
++        .start_thread(ThreadStartParams::default())
++        .await?
++        .thread
++        .id;
++    let (_turn_id, _approval_id) = start_blocked_turn(&mut first, &source_id).await?;
++    let item = queue_item(
++        &mut first,
++        ThreadQueueAddParams {
++            destination: Some(QueueDestination::NewThread { name: None }),
++            ..submission(&source_id, "owned dispatch")
++        },
++    )
++    .await?;
++
++    // Model an in-flight fresh-thread reservation while the first server owns the source.
++    let pool = SqlitePool::connect_with(
++        SqliteConnectOptions::new().filename(codex_home.path().join("queue_1.sqlite")),
++    )
++    .await?;
++    let stored: String =
++        sqlx::query_scalar("SELECT payload_json FROM queued_items WHERE thread_id = ? AND id = ?")
++            .bind(&source_id)
++            .bind(&item.id)
++            .fetch_one(&pool)
++            .await?;
++    let mut payload: Value = serde_json::from_str(&stored)?;
++    payload["state"] = json!("dispatching");
++    payload["revision"] = json!(item.revision + 1);
++    payload["createdThreadId"] = json!(uuid::Uuid::now_v7().to_string());
++    sqlx::query("UPDATE queued_items SET payload_json = ? WHERE thread_id = ? AND id = ?")
++        .bind(serde_json::to_string(&payload)?)
++        .bind(&source_id)
++        .bind(&item.id)
++        .execute(&pool)
++        .await?;
++    pool.close().await;
++
++    let mut second = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .without_managed_config()
++        .build_initialized()
++        .await?;
++    let resume_id = second
++        .send_thread_resume_request(ThreadResumeParams {
++            thread_id: source_id.clone(),
++            exclude_turns: true,
++            ..Default::default()
++        })
++        .await?;
++    let error: JSONRPCError = timeout(
++        READ_TIMEOUT,
++        second.read_stream_until_error_message(RequestId::Integer(resume_id)),
++    )
++    .await??;
++    assert!(error.error.message.contains("already has an active writer"));
++    // The second server's queue watcher polls every ten seconds.
++    tokio::time::sleep(Duration::from_secs(/*secs*/ 11)).await;
++    let queued = list_queue(&mut first, &source_id).await?.data;
++    assert_eq!(queued[0].id, item.id);
++    assert_eq!(queued[0].state, QueueItemState::Dispatching);
++    assert_eq!(queued[0].revision, item.revision + 1);
++    Ok(())
++}
++
+ #[tokio::test]
+ async fn ui_command_claim_and_ack_are_head_only_and_durable() -> Result<()> {
+     let (mut app, _codex_home, _server) = queue_app(Vec::new()).await?;
+diff --git a/codex-rs/ext/queue/src/watch.rs b/codex-rs/ext/queue/src/watch.rs
+index 7a7a7822..8dd042cb 100644
+--- a/codex-rs/ext/queue/src/watch.rs
++++ b/codex-rs/ext/queue/src/watch.rs
+@@ -249,6 +249,20 @@ impl QueuedItemService {
+                                         if item.state == QueueItemState::Dispatching
+                                             || eligibility == Eligibility::Uncertain
+                                         {
++                                            // Another app server may still own this source and be
++                                            // dispatching the item. Resume first so its writer lease
++                                            // decides whether this dispatch is stale.
++                                            let _source_hold = match service
++                                                .hold_source(thread_id)
++                                                .await
++                                            {
++                                                Ok(Some(loaded)) => loaded,
++                                                Ok(None) => return,
++                                                Err(error) => {
++                                                    tracing::debug!(%thread_id, %error, "could not own queued source for recovery");
++                                                    return;
++                                                }
++                                            };
+                                             let _guard = service.dispatch_guard(thread_id).await;
+                                             if let Ok(Some((record, items))) =
+                                                 service.head_record(thread_id).await
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer.rs b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+index ed49de00..b12ba707 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+@@ -121,8 +121,8 @@
+ //! # Submission and Prompt Expansion
+ //!
+ //! Multiline pastes continue blockquote prefixes.
+-//! `Enter` submits immediately. `Tab` requests queuing while a task is running; if no task is
+-//! running, `Tab` submits just like Enter so input is never dropped.
++//! `Enter` submits immediately. `Tab` requests queuing even while idle so a draft cannot
++//! bypass earlier durable queue entries; an eligible empty queue may dispatch it immediately.
+ //! Vim Replace shares Insert's composer actions; only textarea editing differs.
+ //! Literal completion/paste edits discard stale Replace recovery; subsequent typing records anew.
+ //! Token markers added during Replace are removed when restoring overwritten characters.
+@@ -3502,7 +3502,7 @@ impl ChatComposer {
+         if self.queue_keys.is_pressed(key_event)
+             && (self.is_task_running || self.queue_submissions || !self.is_bang_shell_command())
+         {
+-            return self.handle_submission(self.is_task_running || self.queue_submissions);
++            return self.handle_submission(/*should_queue*/ true);
+         }
+ 
+         if self.submit_keys.is_pressed(key_event) {
+@@ -10056,7 +10056,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn tab_submits_when_no_task_running() {
++    fn tab_queues_when_no_task_running() {
+         use crossterm::event::KeyCode;
+         use crossterm::event::KeyEvent;
+         use crossterm::event::KeyModifiers;
+@@ -10078,9 +10078,24 @@ mod tests {
+ 
+         assert!(matches!(
+             result,
+-            InputResult::Submitted { ref text, .. } if text == "hi"
++            InputResult::Queued { ref text, .. } if text == "hi"
+         ));
+         assert!(composer.draft.textarea.is_empty());
++
++        composer
++            .draft
++            .textarea
++            .set_text_clearing_elements("/goal wait five minutes");
++        let (result, _) =
++            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
++        assert!(matches!(
++            result,
++            InputResult::Queued {
++                text,
++                action: QueuedInputAction::ParseSlash,
++                ..
++            } if text == "/goal wait five minutes"
++        ));
+     }
+ 
+     #[test]
+diff --git a/codex-rs/tui/src/chatwidget/tests/service_queue.rs b/codex-rs/tui/src/chatwidget/tests/service_queue.rs
+index 649149e5..e144dd00 100644
+--- a/codex-rs/tui/src/chatwidget/tests/service_queue.rs
++++ b/codex-rs/tui/src/chatwidget/tests/service_queue.rs
+@@ -6,6 +6,33 @@ use codex_app_server_protocol::QueueTrigger;
+ use codex_app_server_protocol::QueuedSubmission;
+ use codex_app_server_protocol::ThreadQueueChangedNotification;
+ 
++#[tokio::test]
++async fn idle_tab_goal_enters_service_queue_instead_of_starting_immediately() {
++    let (mut chat, mut events, mut operations) = helpers::make_chatwidget_manual(None).await;
++    chat.thread_id = Some(ThreadId::new());
++    chat.codex_op_target = CodexOpTarget::AppEvent;
++    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
++    chat.bottom_pane.set_composer_text(
++        "/goal wait five minutes".to_string(),
++        Vec::new(),
++        Vec::new(),
++    );
++    while events.try_recv().is_ok() {}
++    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
++    let events: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
++    assert!(events.iter().any(|event| matches!(
++        event,
++        AppEvent::QueueTabSubmission(submission)
++            if matches!(submission.action, QueueAction::UiCommand { .. })
++    )));
++    assert!(
++        !events
++            .iter()
++            .any(|event| matches!(event, AppEvent::SetThreadGoalDraft { .. }))
++    );
++    assert!(operations.try_recv().is_err());
++}
++
+ #[tokio::test]
+ async fn named_new_thread_is_visible_and_prefilled_for_editing() {
+     let (mut chat, _events, _ops) = helpers::make_chatwidget_manual(None).await;

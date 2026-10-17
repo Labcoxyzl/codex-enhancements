@@ -1,0 +1,173 @@
+From 5ecb16a2f5c9d34f61aabf4fe75d2cd42c753f8c Mon Sep 17 00:00:00 2001
+From: Labcoxyzl <70792091+Labcoxyzl@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 06:40:29 -0400
+Subject: [PATCH] Preserve saved cwd when opening existing tasks from Agents
+
+---
+ codex-rs/tui/src/app/agents_overview.rs       |  7 ++-
+ codex-rs/tui/src/app/agents_overview_tests.rs | 27 +++++++++---
+ codex-rs/tui/src/app/resume_config.rs         | 43 +++++++++++++------
+ codex-rs/tui/src/app/session_lifecycle.rs     |  7 ++-
+ 4 files changed, 61 insertions(+), 23 deletions(-)
+
+diff --git a/codex-rs/tui/src/app/agents_overview.rs b/codex-rs/tui/src/app/agents_overview.rs
+index f72a9ca..7ca9bc1 100644
+--- a/codex-rs/tui/src/app/agents_overview.rs
++++ b/codex-rs/tui/src/app/agents_overview.rs
+@@ -539,7 +539,12 @@ impl App {
+                     history_mode: Some(target_thread.history_mode),
+                 };
+                 match self
+-                    .resume_config_for_target(tui, app_server, &target_session)
++                    .resume_config_for_target(
++                        tui,
++                        app_server,
++                        &target_session,
++                        super::resume_config::ResumeTargetCwdPolicy::PreserveSavedSession,
++                    )
+                     .await
+                 {
+                     Ok(config) => config,
+diff --git a/codex-rs/tui/src/app/agents_overview_tests.rs b/codex-rs/tui/src/app/agents_overview_tests.rs
+index f5313a2..233e57a 100644
+--- a/codex-rs/tui/src/app/agents_overview_tests.rs
++++ b/codex-rs/tui/src/app/agents_overview_tests.rs
+@@ -1961,12 +1961,13 @@ async fn overview_selection_applies_user_permissions_only_to_unloaded_threads()
+ }
+ 
+ #[tokio::test]
+-async fn overview_cold_resume_honors_working_directory_selection() -> Result<()> {
+-    for (mode, cli_cwd, runtime_cwd) in [
+-        ("current", false, false),
+-        ("session", true, false),
+-        ("session", true, true),
+-        ("session", false, false),
++async fn overview_cold_resume_preserves_saved_cwd() -> Result<()> {
++    for (mode, cli_cwd, runtime_cwd, remote_exec) in [
++        ("current", false, false, false),
++        ("session", true, false, false),
++        ("session", true, true, false),
++        ("session", false, false, false),
++        ("session", true, false, true),
+     ] {
+         // Keep the large setup and cold-resume futures off the Windows test stack.
+         let mut app = Box::pin(make_test_app()).await;
+@@ -1996,6 +1997,18 @@ async fn overview_cold_resume_honors_working_directory_selection() -> Result<()>
+             )
+             .expect("create historical session"),
+         )?;
++        if remote_exec {
++            app.environment_manager = Arc::new(
++                EnvironmentManager::create_for_tests(
++                    Some("ws://127.0.0.1:8765".to_string()),
++                    Some(codex_exec_server::ExecServerRuntimeOptions::new(
++                        std::env::current_exe()?,
++                        /*codex_linux_sandbox_exe*/ None,
++                    )?),
++                )
++                .await,
++            );
++        }
+         let mut app_server =
+             Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+         app.launch_cwd = chosen.to_path_buf();
+@@ -2007,7 +2020,7 @@ async fn overview_cold_resume_honors_working_directory_selection() -> Result<()>
+             }
+         });
+         app.runtime_working_directory_override = runtime_cwd.then(|| chosen.to_path_buf());
+-        let expected_cwd = if mode == "current" || cli_cwd || runtime_cwd {
++        let expected_cwd = if remote_exec {
+             chosen
+         } else {
+             test_path_buf("/").abs()
+diff --git a/codex-rs/tui/src/app/resume_config.rs b/codex-rs/tui/src/app/resume_config.rs
+index 30add17..e46fa66 100644
+--- a/codex-rs/tui/src/app/resume_config.rs
++++ b/codex-rs/tui/src/app/resume_config.rs
+@@ -10,36 +10,51 @@ use crate::startup_hooks_review::load_startup_hooks_review_entry;
+ use crate::startup_hooks_review::maybe_run_startup_hooks_review;
+ use codex_config::types::ResumeCwdMode;
+ 
++pub(super) enum ResumeTargetCwdPolicy {
++    FollowResumePreference,
++    PreserveSavedSession,
++}
++
+ impl App {
+     pub(super) async fn resume_config_for_target(
+         &mut self,
+         tui: &mut tui::Tui,
+         app_server: &mut AppServerSession,
+         target_session: &SessionTarget,
++        cwd_policy: ResumeTargetCwdPolicy,
+     ) -> std::result::Result<(Config, crate::local_settings::LocalSettings), AppRunControl> {
+         self.refresh_in_memory_config_from_disk_best_effort("resuming a thread")
+             .await;
+-        let cwd_override = self
+-            .runtime_working_directory_override
+-            .as_deref()
+-            .or(self.harness_overrides.cwd.as_deref())
+-            .or_else(|| app_server.remote_cwd_override())
+-            .map(Path::to_path_buf);
+-        let cwd_override = cwd_override.as_deref();
+-        let resume_cwd_mode = crate::session_resume::effective_resume_cwd_mode(
+-            self.local_settings.tui.resume_cwd,
+-            cwd_override,
++        let uses_remote_workspace_or_environment = crate::uses_remote_workspace_or_environment(
++            &self.app_server_target,
++            &self.environment_manager,
+         );
++        let preserve_saved_cwd = matches!(cwd_policy, ResumeTargetCwdPolicy::PreserveSavedSession)
++            && !uses_remote_workspace_or_environment;
++        let cwd_override = if preserve_saved_cwd {
++            None
++        } else {
++            self.runtime_working_directory_override
++                .as_deref()
++                .or(self.harness_overrides.cwd.as_deref())
++                .or_else(|| app_server.remote_cwd_override())
++                .map(Path::to_path_buf)
++        };
++        let cwd_override = cwd_override.as_deref();
++        let resume_cwd_mode = if preserve_saved_cwd {
++            Some(ResumeCwdMode::Session)
++        } else {
++            crate::session_resume::effective_resume_cwd_mode(
++                self.local_settings.tui.resume_cwd,
++                cwd_override,
++            )
++        };
+         let remembered_current_cwd = cwd_override.unwrap_or(self.launch_cwd.as_path());
+         let current_cwd = if matches!(resume_cwd_mode, Some(ResumeCwdMode::Current)) {
+             remembered_current_cwd.to_path_buf()
+         } else {
+             self.config.cwd.to_path_buf()
+         };
+-        let uses_remote_workspace_or_environment = crate::uses_remote_workspace_or_environment(
+-            &self.app_server_target,
+-            &self.environment_manager,
+-        );
+         if uses_remote_workspace_or_environment
+             && self.harness_overrides.cwd.is_none()
+             && app_server.remote_cwd_override().is_none()
+diff --git a/codex-rs/tui/src/app/session_lifecycle.rs b/codex-rs/tui/src/app/session_lifecycle.rs
+index 61550ab..ceb8021 100644
+--- a/codex-rs/tui/src/app/session_lifecycle.rs
++++ b/codex-rs/tui/src/app/session_lifecycle.rs
+@@ -1318,7 +1318,12 @@ impl App {
+             return Ok(AppRunControl::Continue);
+         }
+         let (mut resume_config, local_settings) = match self
+-            .resume_config_for_target(tui, app_server, &target_session)
++            .resume_config_for_target(
++                tui,
++                app_server,
++                &target_session,
++                super::resume_config::ResumeTargetCwdPolicy::FollowResumePreference,
++            )
+             .await
+         {
+             Ok(config) => config,
+-- 
+2.43.0
+

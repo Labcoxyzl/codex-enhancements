@@ -1,0 +1,115 @@
+From 00def1bfc988e3d3523b5a1071f572c000f10d6f Mon Sep 17 00:00:00 2001
+From: Labcoxyzl <70792091+Labcoxyzl@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 03:03:24 -0400
+Subject: [PATCH 5/6] Remove redundant details from queue selection view
+
+---
+ codex-rs/tui/src/bottom_pane/queue_manager_view.rs            | 4 ----
+ ...ne__queue_manager_view__tests__queue_view_awaiting_ui.snap | 2 --
+ ...eue_manager_view__tests__queue_view_local_unconfirmed.snap | 2 --
+ ...ager_view__tests__queue_view_local_unconfirmed_narrow.snap | 2 --
+ ...om_pane__queue_manager_view__tests__queue_view_narrow.snap | 2 --
+ ..._pane__queue_manager_view__tests__queue_view_selected.snap | 2 --
+ ...et__tests__service_queue__named_new_thread_queue_view.snap | 2 --
+ 7 files changed, 16 deletions(-)
+
+diff --git a/codex-rs/tui/src/bottom_pane/queue_manager_view.rs b/codex-rs/tui/src/bottom_pane/queue_manager_view.rs
+index af38fc61..b6fd1282 100644
+--- a/codex-rs/tui/src/bottom_pane/queue_manager_view.rs
++++ b/codex-rs/tui/src/bottom_pane/queue_manager_view.rs
+@@ -181,8 +181,6 @@ impl QueueManagerView {
+         };
+         if item.local_unconfirmed {
+             return [
+-                format!("Client message ID: {}", item.id),
+-                format!("Item: {}", item.summary),
+                 "State: Unconfirmed local copy".to_string(),
+                 "Delivery may already have happened. Recheck delivery before discarding the local recovery copy. Discard does not undo a delivered action. This view never resends it.".to_string(),
+             ]
+@@ -197,8 +195,6 @@ impl QueueManagerView {
+         }
+         let mut lines = Vec::new();
+         for detail in [
+-            format!("ID: {}", item.id),
+-            format!("Item: {}", item.summary),
+             format!("Trigger: {}", item.trigger),
+             format!("Action: {}", item.action),
+             format!("Destination: {}", item.destination),
+diff --git a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_awaiting_ui.snap b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_awaiting_ui.snap
+index a6cb2b4f..3e2ee6e8 100644
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_awaiting_ui.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_awaiting_ui.snap
+@@ -8,8 +8,6 @@ expression: "render(&view, 72)"
+   › 1. /review changes · awaiting TUI review
+ 
+ 
+-  ID: claimed
+-  Item: /review changes
+   Trigger: After this response
+   Action: Send prompt
+   Destination: Current thread
+diff --git a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_local_unconfirmed.snap b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_local_unconfirmed.snap
+index 4277e8f4..ba59e6c9 100644
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_local_unconfirmed.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_local_unconfirmed.snap
+@@ -8,8 +8,6 @@ expression: "render(&view, 72)"
+   › 1. A possible prompt · unconfirmed local copy
+ 
+ 
+-  Client message ID: client-123
+-  Item: A possible prompt
+   State: Unconfirmed local copy
+   Delivery may already have happened. Recheck delivery before
+   discarding the local recovery copy. Discard does not undo a
+diff --git a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_local_unconfirmed_narrow.snap b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_local_unconfirmed_narrow.snap
+index 34597465..929e59a7 100644
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_local_unconfirmed_narrow.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_local_unconfirmed_narrow.snap
+@@ -8,8 +8,6 @@ expression: "render(&view, 34)"
+   › 1. A possible prompt · unco…
+ 
+ 
+-  Client message ID: client-123
+-  Item: A possible prompt
+   State: Unconfirmed local copy
+   Delivery may already have
+   happened. Recheck delivery
+diff --git a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_narrow.snap b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_narrow.snap
+index 413378b3..8dc0f618 100644
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_narrow.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_narrow.snap
+@@ -9,8 +9,6 @@ expression: "render(&view, 34)"
+   › 2. Repeated prompt · pending
+ 
+ 
+-  ID: second
+-  Item: Repeated prompt
+   Trigger: After this response
+   Action: Send prompt
+   Destination: Current thread
+diff --git a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_selected.snap b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_selected.snap
+index f72033d8..b0e1f858 100644
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_selected.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__queue_manager_view__tests__queue_view_selected.snap
+@@ -9,8 +9,6 @@ expression: "render(&view, 72)"
+   › 2. Repeated prompt · pending
+ 
+ 
+-  ID: second
+-  Item: Repeated prompt
+   Trigger: After this response
+   Action: Send prompt
+   Destination: Current thread
+diff --git a/codex-rs/tui/src/chatwidget/tests/snapshots/codex_tui__chatwidget__tests__service_queue__named_new_thread_queue_view.snap b/codex-rs/tui/src/chatwidget/tests/snapshots/codex_tui__chatwidget__tests__service_queue__named_new_thread_queue_view.snap
+index 56687195..f389b04f 100644
+--- a/codex-rs/tui/src/chatwidget/tests/snapshots/codex_tui__chatwidget__tests__service_queue__named_new_thread_queue_view.snap
++++ b/codex-rs/tui/src/chatwidget/tests/snapshots/codex_tui__chatwidget__tests__service_queue__named_new_thread_queue_view.snap
+@@ -7,8 +7,6 @@ expression: "helpers::render_bottom_popup(&chat, 80)"
+   › 1. Implement the plan · pending
+ 
+ 
+-  ID: named-thread-item
+-  Item: Implement the plan
+   Trigger: after response (or now if idle)
+   Action: send prompt
+   Destination: new thread (Implementation)

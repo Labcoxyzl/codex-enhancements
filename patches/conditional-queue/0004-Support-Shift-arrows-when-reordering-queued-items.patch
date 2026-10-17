@@ -1,0 +1,99 @@
+From da51af75bdf162d125efbde72ba3cc95a7a439a7 Mon Sep 17 00:00:00 2001
+From: Labcoxyzl <70792091+Labcoxyzl@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 02:57:55 -0400
+Subject: [PATCH 4/6] Support Shift arrows when reordering queued items
+
+---
+ .../tui/src/bottom_pane/queue_manager_view.rs |  4 +-
+ .../bottom_pane/queue_manager_view_tests.rs   | 62 ++++++++++---------
+ 2 files changed, 34 insertions(+), 32 deletions(-)
+
+diff --git a/codex-rs/tui/src/bottom_pane/queue_manager_view.rs b/codex-rs/tui/src/bottom_pane/queue_manager_view.rs
+index 6b4c6abe..af38fc61 100644
+--- a/codex-rs/tui/src/bottom_pane/queue_manager_view.rs
++++ b/codex-rs/tui/src/bottom_pane/queue_manager_view.rs
+@@ -305,8 +305,8 @@ impl BottomPaneView for QueueManagerView {
+             return;
+         }
+         match (key_event.code, key_event.modifiers) {
+-            (KeyCode::Up, KeyModifiers::CONTROL) => self.reorder(-1),
+-            (KeyCode::Down, KeyModifiers::CONTROL) => self.reorder(1),
++            (KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT) => self.reorder(-1),
++            (KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT) => self.reorder(1),
+             (KeyCode::Char('r'), KeyModifiers::NONE) => {
+                 if let Some(item) = self.selected_item().filter(|item| item.local_unconfirmed) {
+                     self.send(QueueViewOutput::RecheckLocal {
+diff --git a/codex-rs/tui/src/bottom_pane/queue_manager_view_tests.rs b/codex-rs/tui/src/bottom_pane/queue_manager_view_tests.rs
+index 9ab2e43f..d64347d2 100644
+--- a/codex-rs/tui/src/bottom_pane/queue_manager_view_tests.rs
++++ b/codex-rs/tui/src/bottom_pane/queue_manager_view_tests.rs
+@@ -76,37 +76,39 @@ fn selecting_and_refreshing_tracks_the_item_id_for_edit() {
+ 
+ #[test]
+ fn reorder_requests_use_selected_id_and_zero_based_target_without_local_mutation() {
+-    let (mut view, mut rx) = view(vec![
+-        item("a", "A", QueueItemState::Pending),
+-        item("b", "B", QueueItemState::Pending),
+-        item("c", "C", QueueItemState::Pending),
+-    ]);
+-    view.handle_key_event(KeyCode::Down.into());
+-    view.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+-    view.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
++    for modifiers in [KeyModifiers::CONTROL, KeyModifiers::SHIFT] {
++        let (mut view, mut rx) = view(vec![
++            item("a", "A", QueueItemState::Pending),
++            item("b", "B", QueueItemState::Pending),
++            item("c", "C", QueueItemState::Pending),
++        ]);
++        view.handle_key_event(KeyCode::Down.into());
++        view.handle_key_event(KeyEvent::new(KeyCode::Up, modifiers));
++        view.handle_key_event(KeyEvent::new(KeyCode::Down, modifiers));
+ 
+-    assert_eq!(
+-        rx.try_recv().unwrap(),
+-        QueueViewOutput::Reorder {
+-            id: "b".into(),
+-            to_index: 0
+-        }
+-    );
+-    assert_eq!(
+-        rx.try_recv().unwrap(),
+-        QueueViewOutput::Reorder {
+-            id: "b".into(),
+-            to_index: 2
+-        }
+-    );
+-    assert_eq!(
+-        view.items
+-            .iter()
+-            .map(|item| item.id.as_str())
+-            .collect::<Vec<_>>(),
+-        vec!["a", "b", "c"]
+-    );
+-    assert!(rx.try_recv().is_err());
++        assert_eq!(
++            rx.try_recv().unwrap(),
++            QueueViewOutput::Reorder {
++                id: "b".into(),
++                to_index: 0
++            }
++        );
++        assert_eq!(
++            rx.try_recv().unwrap(),
++            QueueViewOutput::Reorder {
++                id: "b".into(),
++                to_index: 2
++            }
++        );
++        assert_eq!(
++            view.items
++                .iter()
++                .map(|item| item.id.as_str())
++                .collect::<Vec<_>>(),
++            vec!["a", "b", "c"]
++        );
++        assert!(rx.try_recv().is_err());
++    }
+ }
+ 
+ #[test]
