@@ -18,6 +18,12 @@ The implementation session recorded:
 
 The queue implementation’s CLI and package built successfully. Earlier packages passed disposable daemon install/restore checks; that check and the long scenario were not repeated after the final focused changes. Full workspace suites and other upstream releases are not covered by these results.
 
+## Ephemeral side-thread fix
+
+Patch 8 (`512b86a8`) prevents server queue list/claim/add calls for ephemeral `/btw` and `/side` conversations and preserves local Tab queuing and delivery. The old enhanced package reproduced the queue errors and rejected side-thread Tab submissions.
+
+The focused regression and all 42 queue/side TUI tests passed. The rebuilt `0.163.0+btwfix.20261018` package passed repeated isolated terminal runs covering `/btw` startup, two side conversations per run, four queued side prompts delivered exactly once, returning to the parent, and persistent parent queuing. A further run covered switching to the parent and back while side work remained active. The persistent queue also retained separate entries through interruption and individual editing. Tests used a local mock Responses provider. Formatting and whitespace checks passed; full workspace suites were not rerun.
+
 ## Recent sorting
 
 Patch 7 adds Recent grouping (source commit `9c7ad291`). All 81 Agents tests passed with retries disabled, covering timestamp fallback and ties, pins, keyboard navigation, selection after refresh, saved settings, search, archive/delete, hide, and external removals. The Recent rendering snapshot was reviewed; the existing hide-selection snapshot was extended with the new mode’s rows after an initial 80/81 run.

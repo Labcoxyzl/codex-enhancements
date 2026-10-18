@@ -25,6 +25,8 @@ For example, while Codex works on a goal, queue “Review the changes,” open t
 
 Entries dispatch in order. A waiting entry holds later entries, but work in different destination threads can overlap. Tab makes an entry eligible immediately—even when idle—so set conditions before the active response ends. Opening the queue does not pause dispatch. If a completion popup is open, dismiss it before using Tab to queue text.
 
+Ephemeral `/btw` and `/side` conversations use the standard local follow-up queue; conditional queue features apply to persistent threads.
+
 Each entry can be edited separately. Recovery protects active dispatches from competing servers and holds uncertain deliveries for review instead of automatically resending them.
 
 **Based on Codex 0.163.0.** [Build, install, and rollback](INSTALL.md).

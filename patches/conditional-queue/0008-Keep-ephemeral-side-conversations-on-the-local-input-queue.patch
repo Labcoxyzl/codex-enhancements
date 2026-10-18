@@ -1,0 +1,189 @@
+From 512b86a8aa4d4ff99a15db2ec192ea343183f11a Mon Sep 17 00:00:00 2001
+From: Labcoxyzl <70792091+Labcoxyzl@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 05:17:27 -0400
+Subject: [PATCH] Keep ephemeral side conversations on the local input queue
+
+---
+ codex-rs/tui/src/app/queue_actions.rs         |  7 +++
+ codex-rs/tui/src/chatwidget/input_flow.rs     |  8 ++--
+ codex-rs/tui/src/chatwidget/protocol.rs       |  2 +-
+ codex-rs/tui/src/chatwidget/service_queue.rs  |  7 +++
+ codex-rs/tui/src/chatwidget/session_flow.rs   |  4 +-
+ .../tui/src/chatwidget/tests/service_queue.rs | 46 +++++++++++++++++++
+ codex-rs/tui/src/chatwidget/turn_runtime.rs   |  2 +-
+ 7 files changed, 68 insertions(+), 8 deletions(-)
+
+diff --git a/codex-rs/tui/src/app/queue_actions.rs b/codex-rs/tui/src/app/queue_actions.rs
+index 09f5be74..14805b03 100644
+--- a/codex-rs/tui/src/app/queue_actions.rs
++++ b/codex-rs/tui/src/app/queue_actions.rs
+@@ -38,6 +38,13 @@ impl App {
+         thread_id: ThreadId,
+         open: bool,
+     ) {
++        // Side threads have no persistent queue, including during thread-switch replay.
++        if self.side_threads.contains_key(&thread_id)
++            || (self.chat_widget.thread_id() == Some(thread_id)
++                && !self.chat_widget.supports_service_queue())
++        {
++            return;
++        }
+         if self.chat_widget.thread_id() == Some(thread_id) {
+             self.chat_widget.recover_pending_service_queue_drafts();
+         }
+diff --git a/codex-rs/tui/src/chatwidget/input_flow.rs b/codex-rs/tui/src/chatwidget/input_flow.rs
+index 9066bcda..945b00da 100644
+--- a/codex-rs/tui/src/chatwidget/input_flow.rs
++++ b/codex-rs/tui/src/chatwidget/input_flow.rs
+@@ -144,7 +144,7 @@ impl ChatWidget {
+         } else {
+             self.maybe_send_next_queued_input();
+         }
+-        if matches!(self.codex_op_target, CodexOpTarget::AppEvent)
++        if self.supports_service_queue()
+             && let Some(thread_id) = self.thread_id
+         {
+             self.app_event_tx
+@@ -190,7 +190,7 @@ impl ChatWidget {
+         if self.has_misalignment_policy_violation() {
+             return false;
+         }
+-        if matches!(self.codex_op_target, CodexOpTarget::AppEvent)
++        if self.supports_service_queue()
+             && self.is_session_configured()
+             && !self.input_queue.executing_claimed_ui
+             && !self.input_queue.submissions_paused()
+@@ -309,9 +309,7 @@ impl ChatWidget {
+             let Some((queued_message, history_record)) = self.pop_next_queued_user_message() else {
+                 break;
+             };
+-            if matches!(self.codex_op_target, CodexOpTarget::AppEvent)
+-                && !self.input_queue.executing_claimed_ui
+-            {
++            if self.supports_service_queue() && !self.input_queue.executing_claimed_ui {
+                 self.enqueue_service_draft(queued_message, history_record);
+                 break;
+             }
+diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
+index 2215543a..6ef7c8fd 100644
+--- a/codex-rs/tui/src/chatwidget/protocol.rs
++++ b/codex-rs/tui/src/chatwidget/protocol.rs
+@@ -85,7 +85,7 @@ impl ChatWidget {
+             }
+             ServerNotification::ThreadQueueChanged(notification) => {
+                 if !from_replay
+-                    && matches!(self.codex_op_target, CodexOpTarget::AppEvent)
++                    && self.supports_service_queue()
+                     && let Some(thread_id) = self.thread_id
+                     && notification.thread_id == thread_id.to_string()
+                 {
+diff --git a/codex-rs/tui/src/chatwidget/service_queue.rs b/codex-rs/tui/src/chatwidget/service_queue.rs
+index fd84383a..5dfe0642 100644
+--- a/codex-rs/tui/src/chatwidget/service_queue.rs
++++ b/codex-rs/tui/src/chatwidget/service_queue.rs
+@@ -148,6 +148,12 @@ impl ChatWidget {
+             .collect()
+     }
+ 
++    pub(crate) fn supports_service_queue(&self) -> bool {
++        matches!(self.codex_op_target, CodexOpTarget::AppEvent)
++            && !self.config.ephemeral
++            && !self.active_side_conversation
++    }
++
+     pub(crate) fn request_open_service_queue(&mut self) {
+         if let Some(thread_id) = self.thread_id {
+             self.app_event_tx
+@@ -687,6 +693,7 @@ impl ChatWidget {
+ 
+     pub(crate) fn can_claim_service_queue_ui(&self, thread_id: ThreadId) -> bool {
+         self.thread_id == Some(thread_id)
++            && self.supports_service_queue()
+             && self.is_session_configured()
+             && !self.is_user_turn_pending_or_running()
+             && !self.input_queue.submissions_paused()
+diff --git a/codex-rs/tui/src/chatwidget/session_flow.rs b/codex-rs/tui/src/chatwidget/session_flow.rs
+index 4c8ad27a..3bde71e5 100644
+--- a/codex-rs/tui/src/chatwidget/session_flow.rs
++++ b/codex-rs/tui/src/chatwidget/session_flow.rs
+@@ -78,7 +78,9 @@ impl ChatWidget {
+             self.refresh_pending_input_preview();
+         }
+         self.recover_pending_service_queue_drafts();
+-        if matches!(self.codex_op_target, CodexOpTarget::AppEvent) {
++        if self.supports_service_queue()
++            && !matches!(display, SessionConfiguredDisplay::SideConversation)
++        {
+             self.app_event_tx.send(AppEvent::RefreshServiceQueue {
+                 thread_id: session.thread_id,
+             });
+diff --git a/codex-rs/tui/src/chatwidget/tests/service_queue.rs b/codex-rs/tui/src/chatwidget/tests/service_queue.rs
+index e144dd00..6dff94cb 100644
+--- a/codex-rs/tui/src/chatwidget/tests/service_queue.rs
++++ b/codex-rs/tui/src/chatwidget/tests/service_queue.rs
+@@ -835,3 +835,49 @@ async fn claim_response_after_thread_switch_does_not_execute_or_ack() {
+     assert!(rx.try_recv().is_err());
+     assert!(op_rx.try_recv().is_err());
+ }
++
++#[tokio::test]
++async fn ephemeral_threads_keep_tab_input_local_and_drain_it_after_response() {
++    for side in [false, true] {
++        let (mut chat, mut events, _operations) = helpers::make_chatwidget_manual(None).await;
++        let thread_id = ThreadId::new();
++        chat.thread_id = Some(thread_id);
++        chat.codex_op_target = CodexOpTarget::AppEvent;
++        if side {
++            chat.set_side_conversation_active(true);
++        } else {
++            chat.config.ephemeral = true;
++        }
++        assert!(!chat.supports_service_queue());
++        assert!(!chat.can_claim_service_queue_ui(thread_id));
++        chat.on_task_started();
++        for text in ["first follow-up", "second follow-up"] {
++            chat.bottom_pane
++                .set_composer_text(text.into(), Vec::new(), Vec::new());
++            chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
++        }
++        assert_eq!(
++            chat.queued_user_message_texts(),
++            vec!["first follow-up", "second follow-up"]
++        );
++        assert!(
++            !std::iter::from_fn(|| events.try_recv().ok())
++                .any(|event| matches!(event, AppEvent::QueueTabSubmission(_)))
++        );
++
++        handle_turn_completed(&mut chat, "running", None);
++        let events: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
++        assert!(!events.iter().any(|event| matches!(
++            event,
++            AppEvent::QueueTabSubmission(_)
++                | AppEvent::ClaimServiceQueueUi { .. }
++                | AppEvent::RefreshServiceQueue { .. }
++        )));
++        assert!(
++            events
++                .iter()
++                .any(|event| matches!(event, AppEvent::CodexOp(AppCommand::UserTurn { .. })))
++        );
++        assert_eq!(chat.queued_user_message_texts(), vec!["second follow-up"]);
++    }
++}
+diff --git a/codex-rs/tui/src/chatwidget/turn_runtime.rs b/codex-rs/tui/src/chatwidget/turn_runtime.rs
+index 7b915c0b..33c2c422 100644
+--- a/codex-rs/tui/src/chatwidget/turn_runtime.rs
++++ b/codex-rs/tui/src/chatwidget/turn_runtime.rs
+@@ -201,7 +201,7 @@ impl ChatWidget {
+             self.transcript.saw_plan_item_this_turn = false;
+         }
+         if !from_replay {
+-            if matches!(self.codex_op_target, CodexOpTarget::AppEvent)
++            if self.supports_service_queue()
+                 && let Some(thread_id) = self.thread_id
+             {
+                 self.app_event_tx
+-- 
+2.43.0
+
