@@ -24,6 +24,14 @@ Patch 8 (`512b86a8`) prevents server queue list/claim/add calls for ephemeral `/
 
 The focused regression and all 42 queue/side TUI tests passed. The rebuilt `0.163.0+btwfix.20261018` package passed repeated isolated terminal runs covering `/btw` startup, two side conversations per run, four queued side prompts delivered exactly once, returning to the parent, and persistent parent queuing. A further run covered switching to the parent and back while side work remained active. The persistent queue also retained separate entries through interruption and individual editing. Tests used a local mock Responses provider. Formatting and whitespace checks passed; full workspace suites were not rerun.
 
+## Queue recovery deadlock fix
+
+Patch 9 releases the thread-list permit and goal-resume guard before resumed-thread idle work dispatches a queued follow-up to another unloaded thread. Its regression stages both threads unloaded, completes the source goal, and checks that the follow-up runs and thread naming remains responsive.
+
+The implementation logs record the regression failing without the fix and passing in three separate fixed runs. The related run had 119 of 121 tests pass (one flaky); two tests failed, so this is not a clean suite result. The CLI and package built successfully. These historical results were reused when preparing this patch; Rust tests and full workspace suites were not rerun.
+
+Fresh replay of all nine patches onto the pinned 0.163.0 base passed in both repositories and produced tree `adae3f6632bcaefe052639a40f0ebe6ee7adab74`. Both changed Rust files match the installed fix’s source byte for byte. Patch application and repository whitespace checks passed.
+
 ## Recent sorting
 
 Patch 7 adds Recent grouping (source commit `9c7ad291`). All 81 Agents tests passed with retries disabled, covering timestamp fallback and ties, pins, keyboard navigation, selection after refresh, saved settings, search, archive/delete, hide, and external removals. The Recent rendering snapshot was reviewed; the existing hide-selection snapshot was extended with the new mode’s rows after an initial 80/81 run.

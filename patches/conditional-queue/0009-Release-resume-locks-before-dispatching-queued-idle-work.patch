@@ -1,0 +1,187 @@
+From e9397d4027c087ffebf75b267c4f8644c189e963 Mon Sep 17 00:00:00 2001
+From: Labcoxyzl <70792091+Labcoxyzl@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 20:15:11 -0400
+Subject: [PATCH] Release resume locks before dispatching queued idle work
+
+---
+ .../request_processors/thread_processor.rs    |   3 +
+ .../app-server/tests/suite/v2/thread_queue.rs | 139 ++++++++++++++++++
+ 2 files changed, 142 insertions(+)
+
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+index 2fa866ea..3535d566 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -4238,6 +4238,9 @@ impl ThreadRequestProcessor {
+                     self.thread_watch_manager
+                         .upsert_thread(&thread_id.to_string())
+                         .await;
++                    // Idle work can resume other threads (queued follow-ups), which needs both locks.
++                    drop(_goal_resume_guard);
++                    drop(_thread_list_state_permit);
+                     // Invoke idle work before arming subscriber-based unloading.
+                     codex_thread
+                         .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+diff --git a/codex-rs/app-server/tests/suite/v2/thread_queue.rs b/codex-rs/app-server/tests/suite/v2/thread_queue.rs
+index 02155b45..be06674a 100644
+--- a/codex-rs/app-server/tests/suite/v2/thread_queue.rs
++++ b/codex-rs/app-server/tests/suite/v2/thread_queue.rs
+@@ -51,12 +51,16 @@ use codex_app_server_protocol::ThreadReadParams;
+ use codex_app_server_protocol::ThreadReadResponse;
+ use codex_app_server_protocol::ThreadResumeParams;
+ use codex_app_server_protocol::ThreadResumeResponse;
++use codex_app_server_protocol::ThreadSetNameParams;
++use codex_app_server_protocol::ThreadSetNameResponse;
+ use codex_app_server_protocol::ThreadSettingsUpdateParams;
+ use codex_app_server_protocol::ThreadSettingsUpdateResponse;
+ use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
+ use codex_app_server_protocol::ThreadStartParams;
+ use codex_app_server_protocol::ThreadStartResponse;
+ use codex_app_server_protocol::ThreadStatus;
++use codex_app_server_protocol::ThreadUnsubscribeParams;
++use codex_app_server_protocol::ThreadUnsubscribeResponse;
+ use codex_app_server_protocol::TurnCompletedNotification;
+ use codex_app_server_protocol::TurnInterruptParams;
+ use codex_app_server_protocol::TurnInterruptResponse;
+@@ -1107,6 +1111,141 @@ async fn created_thread_follow_up_resumes_unloaded_target_after_goal_completion(
+     Ok(())
+ }
+
++#[tokio::test]
++async fn cold_source_follow_up_to_unloaded_created_thread_keeps_permit_free() -> Result<()> {
++    skip_if_remote!(
++        Ok(()),
++        "uses a host-local approval-blocked turn to stage the queue"
++    );
++    let server = create_mock_responses_server_sequence_unchecked(vec![
++        blocked_turn_response()?,
++        create_final_assistant_message_sse_response("source done")?,
++        create_final_assistant_message_sse_response("fresh done")?,
++        create_final_assistant_message_sse_response("follow-up done")?,
++    ])
++    .await;
++    let codex_home = TempDir::new()?;
++    MockResponsesConfig::new(&server.uri())
++        .with_approval_policy("on-request")
++        .with_root_config("approvals_reviewer = \"user\"\nthread_unload_delay_secs = 0")
++        .enable_feature(Feature::Goals)
++        .write(codex_home.path())?;
++    let mut app = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .without_managed_config()
++        .build_initialized()
++        .await?;
++    let source_id = app
++        .start_thread(ThreadStartParams::default())
++        .await?
++        .thread
++        .id;
++    let (source_turn_id, approval_id) = start_blocked_turn(&mut app, &source_id).await?;
++    let goal_id = set_goal(&mut app, &source_id, Some("wait for target"), "paused")
++        .await?
++        .goal_id
++        .context("source goal ID missing")?;
++    let fresh = queue_item(
++        &mut app,
++        ThreadQueueAddParams {
++            destination: Some(QueueDestination::NewThread { name: None }),
++            ..submission(&source_id, "fresh target")
++        },
++    )
++    .await?;
++    queue_item(
++        &mut app,
++        ThreadQueueAddParams {
++            trigger: Some(QueueTrigger::GoalCompleted {
++                goal_id: goal_id.clone(),
++            }),
++            destination: Some(QueueDestination::CreatedThread {
++                queued_item_id: fresh.id.clone(),
++            }),
++            ..submission(&source_id, "after cold source resumes")
++        },
++    )
++    .await?;
++    decline_approval(&mut app, approval_id).await?;
++    let source_completed: TurnCompletedNotification =
++        timeout(READ_TIMEOUT, app.read_notification("turn/completed")).await??;
++    assert_eq!(source_completed.turn.id, source_turn_id);
++    let target_id = timeout(Duration::from_secs(30), async {
++        loop {
++            let items = list_queue(&mut app, &source_id).await?.data;
++            if items[0].state == QueueItemState::Completed {
++                break Ok::<_, anyhow::Error>(
++                    items[0]
++                        .created_thread_id
++                        .clone()
++                        .context("fresh target ID missing")?,
++                );
++            }
++            tokio::time::sleep(Duration::from_millis(100)).await;
++        }
++    })
++    .await??;
++    let _: ThreadUnsubscribeResponse = app
++        .request(|request_id| ClientRequest::ThreadUnsubscribe {
++            request_id,
++            params: ThreadUnsubscribeParams {
++                thread_id: source_id.clone(),
++            },
++        })
++        .await?;
++    timeout(Duration::from_secs(30), async {
++        loop {
++            let loaded: ThreadLoadedListResponse = app
++                .request(|request_id| ClientRequest::ThreadLoadedList {
++                    request_id,
++                    params: ThreadLoadedListParams::default(),
++                })
++                .await?;
++            if !loaded.data.contains(&source_id) && !loaded.data.contains(&target_id) {
++                break Ok::<_, anyhow::Error>(());
++            }
++            tokio::time::sleep(Duration::from_millis(100)).await;
++        }
++    })
++    .await??;
++
++    // Completing the goal resumes the cold source, whose idle dispatch must resume the target.
++    set_goal(&mut app, &source_id, None, "complete").await?;
++    timeout(Duration::from_secs(30), async {
++        loop {
++            let requests = server
++                .received_requests()
++                .await
++                .context("mock request capture unavailable")?;
++            if requests.iter().any(|request| {
++                request.body_json::<Value>().is_ok_and(|body| {
++                    body["input"]
++                        .to_string()
++                        .contains("after cold source resumes")
++                })
++            }) {
++                break Ok::<_, anyhow::Error>(());
++            }
++            tokio::time::sleep(Duration::from_millis(100)).await;
++        }
++    })
++    .await
++    .context("created-thread follow-up stalled")??;
++    let _: ThreadSetNameResponse = timeout(
++        READ_TIMEOUT,
++        app.request(|request_id| ClientRequest::ThreadSetName {
++            request_id,
++            params: ThreadSetNameParams {
++                thread_id: target_id.clone(),
++                name: "renamed after recovery".to_string(),
++            },
++        }),
++    )
++    .await
++    .context("thread/name/set blocked on the thread list permit")??;
++    Ok(())
++}
++
+ #[tokio::test]
+ async fn queue_requires_experimental_handshake() -> Result<()> {
+     let (mut app, codex_home, _server) = queue_app(Vec::new()).await?;

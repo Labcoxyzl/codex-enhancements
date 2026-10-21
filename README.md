@@ -29,6 +29,8 @@ Ephemeral `/btw` and `/side` conversations use the standard local follow-up queu
 
 Each entry can be edited separately. Recovery protects active dispatches from competing servers and holds uncertain deliveries for review instead of automatically resending them.
 
+Recovery releases the thread-list and goal-resume locks before dispatching idle work, preventing a queued follow-up to an unloaded thread from freezing the shared server.
+
 **Based on Codex 0.163.0.** [Build, install, and rollback](INSTALL.md).
 
 ## Recent sorting
